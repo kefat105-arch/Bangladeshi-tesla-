@@ -1,0 +1,6 @@
+{
+  "name": "Endless Ride Bangladesh",
+  "description": "3D mobile-first endless vehicle progression runner through vibrant Bangladesh streets and flyovers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
