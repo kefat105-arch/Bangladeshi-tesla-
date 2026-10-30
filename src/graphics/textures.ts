@@ -350,14 +350,125 @@ class TextureFactory {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
+    this.textures.set(key, texture);
+    return texture;
+  }
+
+  // --- Rural Herringbone Brick Road Texture ---
+  public getBrickRoadTexture(): THREE.CanvasTexture {
+    if (this.textures.has('brick_road')) return this.textures.get('brick_road')!;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d')!;
+
+    // Earthy reddish brick background
+    ctx.fillStyle = '#b91c1c';
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Herringbone 45-degree brick patterns
+    ctx.strokeStyle = '#7f1d1d';
+    ctx.lineWidth = 3;
+    for (let y = 0; y < 512; y += 24) {
+      for (let x = 0; x < 512; x += 48) {
+        ctx.fillStyle = ((x + y) / 24) % 2 === 0 ? '#dc2626' : '#991b1b';
+        ctx.fillRect(x, y, 46, 22);
+        ctx.strokeRect(x, y, 46, 22);
+      }
+    }
+
+    // Dirt edges on sides
+    ctx.fillStyle = '#78350f';
+    ctx.fillRect(0, 0, 28, 512);
+    ctx.fillRect(512 - 28, 0, 28, 512);
+
+    const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(1, 2);
+    texture.repeat.set(1, 4);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = this.maxAnisotropy;
-    this.textures.set(key, texture);
+    this.textures.set('brick_road', texture);
+    return texture;
+  }
+
+  // --- Grand Prix Racetrack with Red/White Curbs ---
+  public getRaceTrackTexture(): THREE.CanvasTexture {
+    if (this.textures.has('racetrack')) return this.textures.get('racetrack')!;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d')!;
+
+    // Ultra dark smooth racing asphalt
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Subtle tire rubber marks (skidlines)
+    ctx.fillStyle = '#030712';
+    for (let i = 0; i < 400; i++) {
+      const x = 120 + Math.random() * 272;
+      const y = Math.random() * 512;
+      ctx.fillRect(x, y, 8, 20);
+    }
+
+    // High contrast red & white racing apex curbing along both sides
+    const curbW = 32;
+    const blockH = 40;
+    for (let y = 0; y < 512; y += blockH) {
+      const isRed = (y / blockH) % 2 === 0;
+      ctx.fillStyle = isRed ? '#ef4444' : '#f8fafc';
+      ctx.fillRect(0, y, curbW, blockH);
+      ctx.fillRect(512 - curbW, y, curbW, blockH);
+    }
+
+    // Racing center dashed guide line
+    ctx.fillStyle = '#facc15';
+    for (let y = 0; y < 512; y += 64) {
+      ctx.fillRect(254, y, 4, 36);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(1, 4);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = this.maxAnisotropy;
+    this.textures.set('racetrack', texture);
+    return texture;
+  }
+
+  // --- Golden Beach Sand Texture ---
+  public getSandTexture(): THREE.CanvasTexture {
+    if (this.textures.has('sand')) return this.textures.get('sand')!;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Warm sand grain
+    for (let i = 0; i < 2000; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 256;
+      ctx.fillStyle = Math.random() > 0.5 ? 'rgba(234, 179, 8, 0.4)' : 'rgba(202, 138, 4, 0.3)';
+      ctx.fillRect(x, y, 2, 2);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(4, 4);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    this.textures.set('sand', texture);
     return texture;
   }
 }
 
 export const textureFactory = new TextureFactory();
+

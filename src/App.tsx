@@ -15,8 +15,13 @@ import {
   MinimapEntity,
   BiomeConfig,
   BIOME_CONFIGS,
+  BiomeType,
+  GameMode,
+  VersusMatchFormat,
+  SavedCheckpoint,
 } from './types/game';
 import { soundManager } from './audio/soundManager';
+import { multiplayerService } from './multiplayer/multiplayerService';
 import { TitleScreen } from './components/TitleScreen';
 import { GameHUD } from './components/GameHUD';
 import { GameOverModal } from './components/GameOverModal';
@@ -24,9 +29,14 @@ import { PauseModal } from './components/PauseModal';
 import { GarageModal } from './components/GarageModal';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { SettingsModal } from './components/SettingsModal';
+import { InGameSmartphone } from './components/InGameSmartphone';
+import { MapSelectModal } from './components/MapSelectModal';
+import { MultiplayerModal } from './components/MultiplayerModal';
+import { VehicleCockpit } from './components/VehicleCockpit';
+import { OnFootControls } from './components/OnFootControls';
 
-const STATS_STORAGE_KEY = 'endless_ride_bangladesh_stats_v2';
-const SETTINGS_STORAGE_KEY = 'endless_ride_bangladesh_settings_v2';
+const STATS_STORAGE_KEY = 'endless_ride_bangladesh_stats_v3';
+const SETTINGS_STORAGE_KEY = 'endless_ride_bangladesh_settings_v3';
 
 const DEFAULT_STATS: PlayerStats = {
   coins: 0,
@@ -36,8 +46,9 @@ const DEFAULT_STATS: PlayerStats = {
   runsPlayed: 0,
   skitchCount: 0,
   nearMissCount: 0,
-  unlockedVehicles: ['skateboard'],
+  unlockedVehicles: ['skateboard', 'bicycle', 'sports_motorcycle', 'cng', 'bus'],
   achievements: [],
+  lastSavedCheckpoint: null,
 };
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -47,6 +58,9 @@ const DEFAULT_SETTINGS: GameSettings = {
   touchSensitivity: 1.0,
   showMinimap: true,
   gestureTutorialSeen: false,
+  gameMode: 'runner',
+  selectedMap: 'dhaka_city',
+  playerName: 'DhakaRider_' + Math.floor(Math.random() * 900 + 100),
 };
 
 export default function App() {
@@ -58,6 +72,9 @@ export default function App() {
   const [showGarage, setShowGarage] = useState(false);
   const [showHowToPlay, setShowHowToPlay] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSmartphone, setShowSmartphone] = useState(false);
+  const [showMapSelect, setShowMapSelect] = useState(false);
+  const [showMultiplayerModal, setShowMultiplayerModal] = useState(false);
 
   // Persistent Player Stats & Settings
   const [stats, setStats] = useState<PlayerStats>(() => {
@@ -83,6 +100,8 @@ export default function App() {
 
   // In-game dynamic state
   const [currentVehicle, setCurrentVehicle] = useState<VehicleStage>('skateboard');
+  const [isDriving, setIsDriving] = useState(true);
+  const [nearbyVehicle, setNearbyVehicle] = useState<{ stage: VehicleStage; x: number; z: number } | null>(null);
   const [pickupTarget, setPickupTarget] = useState<VehicleStage | null>(null);
   const [pickupDistance, setPickupDistance] = useState<number | null>(null);
   const [skitchStatus, setSkitchStatus] = useState<{ active: boolean; label?: string }>({ active: false });
@@ -91,6 +110,9 @@ export default function App() {
 
   const [minimapEntities, setMinimapEntities] = useState<MinimapEntity[]>([]);
   const [currentBiome, setCurrentBiome] = useState<BiomeConfig>(BIOME_CONFIGS['dhaka_city']);
+  const [selectedMap, setSelectedMap] = useState<BiomeType | null>(settings.selectedMap || null);
+  const [gameMode, setGameMode] = useState<GameMode>(settings.gameMode || 'runner');
+  const [multiplayerStatus, setMultiplayerStatus] = useState({ status: 'connected', ping: 42 });
 
   const [scoreState, setScoreState] = useState<GameScoreState>({
     currentScore: 0,
@@ -101,6 +123,7 @@ export default function App() {
     nearMisses: 0,
     skitchBonus: 0,
     speedKmh: 0,
+    checkpointsPassed: 0,
   });
 
   const [crashReason, setCrashReason] = useState<string>('');
@@ -156,6 +179,12 @@ export default function App() {
         });
       }
     },
+    onDrivingStateChange: (driving: boolean) => {
+      setIsDriving(driving);
+    },
+    onVehicleNearby: (vehicle: { stage: VehicleStage; x: number; z: number } | null) => {
+      setNearbyVehicle(vehicle);
+    },
     onGameOver: (finalStats: GameScoreState, reason: string) => {
       setGameState('gameover');
       setCrashReason(reason);
@@ -195,6 +224,12 @@ export default function App() {
       setShowTutorial(false);
       setSettings((prev) => ({ ...prev, gestureTutorialSeen: true }));
     },
+    onCheckpointSaved: (checkpoint: SavedCheckpoint) => {
+      setStats((prev) => ({
+        ...prev,
+        lastSavedCheckpoint: checkpoint,
+      }));
+    },
   };
 
   // Initialize Game Engine exactly ONCE in dedicated empty container ref
@@ -211,25 +246,25 @@ export default function App() {
       onBiomeChange: (b) => callbacksRef.current?.onBiomeChange(b),
       onMinimapUpdate: (e, n) => callbacksRef.current?.onMinimapUpdate(e, n),
       onGestureDetected: () => callbacksRef.current?.onGestureDetected(),
+      onCheckpointSaved: (cp) => callbacksRef.current?.onCheckpointSaved(cp),
+      onVehicleNearby: (v) => callbacksRef.current?.onVehicleNearby(v),
+      onDrivingStateChange: (d) => callbacksRef.current?.onDrivingStateChange(d),
+      onVersusCountdown: (c) => callbacksRef.current?.onVersusCountdown(c),
+      onVersusStart: () => callbacksRef.current?.onVersusStart(),
     });
 
     engine.touchSensitivity = settings.touchSensitivity;
+    engine.setGameMode(gameMode);
+    if (selectedMap) engine.setSelectedMap(selectedMap);
     engineRef.current = engine;
 
     return () => {
       engine.dispose();
       engineRef.current = null;
     };
-  }, []); // Run exactly once on mount!
+  }, []);
 
-  // Keep touch sensitivity synchronized without tearing down WebGL
-  useEffect(() => {
-    if (engineRef.current) {
-      engineRef.current.touchSensitivity = settings.touchSensitivity;
-    }
-  }, [settings.touchSensitivity]);
-
-  // Handle Pause Keyboard Shortcut (Escape / KeyP)
+  // Handle Pause Keyboard Shortcut (Escape / KeyP / KeyG for Garage Phone / KeyM for Maps)
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.code === 'Escape' || e.code === 'KeyP') {
@@ -238,22 +273,30 @@ export default function App() {
         } else if (gameState === 'paused') {
           handleResume();
         }
+      } else if (e.code === 'KeyG') {
+        setShowSmartphone((prev) => !prev);
+      } else if (e.code === 'KeyM') {
+        setShowMapSelect((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [gameState]);
 
-  const handleStartGame = () => {
+  const handleStartGame = (startingVehicle: VehicleStage = 'skateboard') => {
     setGameState('playing');
-    setCurrentVehicle('skateboard');
+    setCurrentVehicle(startingVehicle);
+    setIsDriving(true);
     setPickupTarget(null);
     setPickupDistance(null);
     setSkitchStatus({ active: false });
     setIsNewRecord(false);
+    setShowSmartphone(false);
 
     if (engineRef.current) {
-      engineRef.current.start('skateboard');
+      engineRef.current.setGameMode(gameMode);
+      if (selectedMap) engineRef.current.setSelectedMap(selectedMap);
+      engineRef.current.start(startingVehicle);
     }
   };
 
@@ -272,11 +315,12 @@ export default function App() {
   };
 
   const handleRestart = () => {
-    handleStartGame();
+    handleStartGame('skateboard');
   };
 
   const handleHome = () => {
     setGameState('title');
+    setShowSmartphone(false);
     if (engineRef.current) {
       engineRef.current.stop();
     }
@@ -299,6 +343,67 @@ export default function App() {
     }
   };
 
+  const handleSpawnVehicleFromPhone = (stage: VehicleStage) => {
+    if (engineRef.current) {
+      engineRef.current.spawnVehicleFromPhone(stage);
+    }
+  };
+
+  const handleEnterVehicle = (stage: VehicleStage) => {
+    if (engineRef.current) {
+      engineRef.current.enterVehicle(stage);
+    }
+  };
+
+  const handleExitVehicle = () => {
+    if (engineRef.current) {
+      engineRef.current.exitVehicle();
+    }
+  };
+
+  const handleResetCamera = () => {
+    if (engineRef.current) {
+      engineRef.current.resetCamera();
+    }
+  };
+
+  const handleSaveCheckpointManually = () => {
+    if (engineRef.current) {
+      engineRef.current.saveCheckpointManually();
+    }
+  };
+
+  const handleSelectMap = (mapId: BiomeType | null) => {
+    setSelectedMap(mapId);
+    setSettings((prev) => ({ ...prev, selectedMap: mapId || 'dhaka_city' }));
+    if (engineRef.current) {
+      engineRef.current.setSelectedMap(mapId);
+    }
+    showNotice(
+      mapId ? `MAP SELECTED: ${BIOME_CONFIGS[mapId].name.toUpperCase()}` : 'DYNAMIC ENDLESS WORLD ACTIVATED',
+      mapId ? BIOME_CONFIGS[mapId].bengaliName : undefined,
+      'pickup',
+    );
+  };
+
+  const handleSelectGameMode = (mode: GameMode, versusFormat?: VersusMatchFormat) => {
+    setGameMode(mode);
+    setSettings((prev) => ({ ...prev, gameMode: mode }));
+    if (engineRef.current) {
+      engineRef.current.setGameMode(mode);
+    }
+    multiplayerService.setPlayerInfo(settings.playerName, selectedMap || 'dhaka_city', mode === 'runner' ? 'freeroam' : mode, versusFormat);
+    showNotice(
+      mode === 'runner'
+        ? 'OFFLINE ENDLESS RUNNER MODE'
+        : mode === 'freeroam'
+        ? 'ONLINE FREE ROAM MODE'
+        : `ONLINE VERSUS (${(versusFormat || '1v1').toUpperCase()})`,
+      'Mode Updated',
+      'pickup',
+    );
+  };
+
   const handleResetData = () => {
     setStats(DEFAULT_STATS);
     localStorage.removeItem(STATS_STORAGE_KEY);
@@ -318,10 +423,12 @@ export default function App() {
       {/* Screen: Title Screen Shell */}
       {gameState === 'title' && (
         <TitleScreen
-          onStart={handleStartGame}
+          onStart={() => handleStartGame('skateboard')}
           onOpenGarage={() => setShowGarage(true)}
           onOpenHowToPlay={() => setShowHowToPlay(true)}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenMaps={() => setShowMapSelect(true)}
+          onOpenMultiplayer={() => setShowMultiplayerModal(true)}
           stats={stats}
         />
       )}
@@ -331,6 +438,8 @@ export default function App() {
         <GameHUD
           scoreState={scoreState}
           currentVehicle={currentVehicle}
+          isDriving={isDriving}
+          gameMode={gameMode}
           pickupTarget={pickupTarget}
           pickupDistance={pickupDistance}
           skitchStatus={skitchStatus}
@@ -340,11 +449,50 @@ export default function App() {
           onPause={handlePause}
           onHorn={handleHorn}
           onAction={handleAction}
+          onOpenPhone={() => setShowSmartphone(true)}
+          onResetCamera={handleResetCamera}
           minimapEntities={minimapEntities}
           currentBiomeName={currentBiome.name}
           showMinimap={settings.showMinimap}
           showGestureTutorial={showTutorial && gameState === 'playing'}
-          canSkitch={currentConfig.canSkitch}
+          canSkitch={currentConfig?.canSkitch && isDriving}
+          lastSavedCheckpoint={stats.lastSavedCheckpoint}
+          nearbyVehicle={nearbyVehicle}
+          onEnterVehicle={handleEnterVehicle}
+          onExitVehicle={handleExitVehicle}
+        />
+      )}
+
+      {/* DEDICATED CONTROLS: REALISTIC VEHICLE COCKPIT vs NATURAL ON-FOOT PEDESTRIAN */}
+      {gameState === 'playing' && isDriving && (
+        <VehicleCockpit
+          currentVehicle={currentVehicle}
+          onSteer={(val) => engineRef.current?.setSteerWheel(val)}
+          onAccelerate={(active) => engineRef.current?.setGasPedal(active)}
+          onBrake={(active) => engineRef.current?.setBrakePedal(active)}
+          onGearChange={(gear) => engineRef.current?.setVehicleGear(gear)}
+          onHorn={() => engineRef.current?.triggerHorn()}
+          onJump={() => engineRef.current?.triggerJump()}
+          onSlide={() => engineRef.current?.triggerSlide()}
+          onAction={() => engineRef.current?.triggerAction()}
+          onExitVehicle={handleExitVehicle}
+          onOpenPhone={() => setShowSmartphone(true)}
+          canSlide={currentConfig?.canSlide || false}
+          canSkitch={currentConfig?.canSkitch || false}
+        />
+      )}
+
+      {gameState === 'playing' && !isDriving && (
+        <OnFootControls
+          onMove={(x, z) => engineRef.current?.setOnFootMove(x, z)}
+          onSprintToggle={(sprinting) => engineRef.current?.setOnFootSprint(sprinting)}
+          onSneakToggle={(sneaking) => engineRef.current?.setOnFootSneak(sneaking)}
+          onJump={() => engineRef.current?.triggerJump()}
+          onGesture={() => engineRef.current?.triggerOnFootGesture()}
+          onOpenPhone={() => setShowSmartphone(true)}
+          onResetCamera={handleResetCamera}
+          nearbyVehicle={nearbyVehicle}
+          onEnterVehicle={handleEnterVehicle}
         />
       )}
 
@@ -356,10 +504,12 @@ export default function App() {
           onHome={handleHome}
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
+          onSaveCheckpoint={handleSaveCheckpointManually}
+          onOpenMaps={() => setShowMapSelect(true)}
         />
       )}
 
-      {/* Modal: Game Over */}
+      {/* Modal: Game Over (Only in Offline Endless Runner mode on crash) */}
       {gameState === 'gameover' && (
         <GameOverModal
           scoreState={scoreState}
@@ -376,10 +526,49 @@ export default function App() {
         <GarageModal
           onClose={() => setShowGarage(false)}
           unlockedVehicles={stats.unlockedVehicles}
+          onSelectVehicle={(stage) => {
+            setShowGarage(false);
+            handleStartGame(stage);
+          }}
         />
       )}
 
-      {/* Modal: How to Play */}
+      {/* Modal: In-Game Interactive Smartphone */}
+      <InGameSmartphone
+        isOpen={showSmartphone}
+        onClose={() => setShowSmartphone(false)}
+        currentVehicle={currentVehicle}
+        isDriving={isDriving}
+        onSpawnVehicle={handleSpawnVehicleFromPhone}
+        onSelectMap={handleSelectMap}
+        selectedMap={selectedMap}
+        gameMode={gameMode}
+        onSelectGameMode={handleSelectGameMode}
+        lastSavedCheckpoint={stats.lastSavedCheckpoint || null}
+        onSaveCheckpoint={handleSaveCheckpointManually}
+        multiplayerStatus={multiplayerStatus}
+      />
+
+      {/* Modal: Map Select */}
+      <MapSelectModal
+        isOpen={showMapSelect}
+        onClose={() => setShowMapSelect(false)}
+        selectedMap={selectedMap}
+        onSelectMap={handleSelectMap}
+      />
+
+      {/* Modal: Multiplayer Lobby & Modes */}
+      <MultiplayerModal
+        isOpen={showMultiplayerModal}
+        onClose={() => setShowMultiplayerModal(false)}
+        gameMode={gameMode}
+        onSelectMode={handleSelectGameMode}
+        playerName={settings.playerName}
+        onUpdatePlayerName={(name) => setSettings((prev) => ({ ...prev, playerName: name }))}
+        multiplayerStatus={multiplayerStatus}
+      />
+
+      {/* Modal: How to Play / Controls */}
       {showHowToPlay && (
         <HowToPlayModal
           onClose={() => setShowHowToPlay(false)}

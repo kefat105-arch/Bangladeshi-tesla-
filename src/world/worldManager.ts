@@ -4,7 +4,15 @@
  */
 
 import * as THREE from 'three';
-import { BiomeType, BiomeConfig, BIOME_CONFIGS, VehicleStage, VEHICLE_STAGES, VEHICLE_CONFIGS, MinimapEntity } from '../types/game';
+import {
+  BiomeType,
+  BiomeConfig,
+  BIOME_CONFIGS,
+  VehicleStage,
+  VEHICLE_CONFIGS,
+  MinimapEntity,
+  RemotePlayerState,
+} from '../types/game';
 import { textureFactory } from '../graphics/textures';
 import {
   createVehiclePickupMesh,
@@ -17,6 +25,9 @@ import {
   createCarModel,
   createMinibusModel,
   createPedestrianModel,
+  createCheckpointGateModel,
+  createStartLineModel,
+  createVehicleBundleForStage,
   VehicleMeshBundle,
 } from '../models/vehicleModels';
 
@@ -80,6 +91,13 @@ export interface RoadObstacle {
   canDuckUnder?: boolean;
 }
 
+export interface CheckpointEntity {
+  id: number;
+  mesh: THREE.Group;
+  z: number;
+  passed: boolean;
+}
+
 export interface SegmentChunk {
   root: THREE.Group;
   index: number;
@@ -90,6 +108,14 @@ export interface SegmentChunk {
   groundMesh: THREE.Mesh;
 }
 
+export interface PlayerSpawnedVehicleEntity {
+  mesh: THREE.Group;
+  bundle: VehicleMeshBundle;
+  stage: VehicleStage;
+  x: number;
+  z: number;
+}
+
 export class WorldManager {
   private scene: THREE.Scene;
   private segments: SegmentChunk[] = [];
@@ -97,19 +123,47 @@ export class WorldManager {
   private pedestriansList: PedestrianEntity[] = [];
   private coinsList: CollectibleCoin[] = [];
   private obstaclesList: RoadObstacle[] = [];
+  private checkpointsList: CheckpointEntity[] = [];
   private activePickup: VehiclePickupEntity | null = null;
-  private nextSegmentZ = -50; // Starts behind player (at z = -50) so road is fully visible behind
+  private startLineMesh: THREE.Group | null = null;
+  private nextSegmentZ = -50;
   private currentSegmentIndex = 0;
+  private nextCheckpointIndex = 1;
 
-  // Biome management
+  // Selected Map override (for custom map choice from Phone or Menu)
+  private selectedMap: BiomeType | null = null;
   private lastBiome: BiomeType = 'dhaka_city';
   private biomeRunCount = 0;
 
+  // Player spawned vehicle from phone garage
+  private playerSpawnedVehicle: PlayerSpawnedVehicleEntity | null = null;
+
+  // Remote multiplayer players
+  private remotePlayerMeshes: Map<
+    string,
+    {
+      root: THREE.Group;
+      bundle: VehicleMeshBundle;
+      nameTag: THREE.Mesh;
+      currentX: number;
+      currentY: number;
+      currentZ: number;
+      targetX: number;
+      targetY: number;
+      targetZ: number;
+      targetRotationY: number;
+      vehicleStage: VehicleStage;
+    }
+  > = new Map();
+
   // Reusable materials
   private roadMaterial: THREE.MeshStandardMaterial;
+  private brickRoadMaterial: THREE.MeshStandardMaterial;
+  private raceTrackMaterial: THREE.MeshStandardMaterial;
   private curbMaterial: THREE.MeshStandardMaterial;
   private grassMaterial: THREE.MeshStandardMaterial;
   private waterMaterial: THREE.MeshStandardMaterial;
+  private sandMaterial: THREE.MeshStandardMaterial;
   private cityGroundMaterial: THREE.MeshStandardMaterial;
   private concreteMaterial: THREE.MeshStandardMaterial;
   private brickMaterial: THREE.MeshStandardMaterial;
@@ -123,6 +177,17 @@ export class WorldManager {
       map: textureFactory.getRoadTexture(),
       roughness: 0.75,
       metalness: 0.1,
+    });
+
+    this.brickRoadMaterial = new THREE.MeshStandardMaterial({
+      map: textureFactory.getBrickRoadTexture(),
+      roughness: 0.85,
+    });
+
+    this.raceTrackMaterial = new THREE.MeshStandardMaterial({
+      map: textureFactory.getRaceTrackTexture(),
+      roughness: 0.65,
+      metalness: 0.2,
     });
 
     this.curbMaterial = new THREE.MeshStandardMaterial({
@@ -141,8 +206,13 @@ export class WorldManager {
       metalness: 0.4,
     });
 
+    this.sandMaterial = new THREE.MeshStandardMaterial({
+      map: textureFactory.getSandTexture(),
+      roughness: 0.9,
+    });
+
     this.cityGroundMaterial = new THREE.MeshStandardMaterial({
-      color: 0x1e293b, // Dark Dhaka asphalt/pavers
+      color: 0x1e293b,
       roughness: 0.85,
     });
 
@@ -164,13 +234,21 @@ export class WorldManager {
       metalness: 0.85,
     });
 
-    // Automatically initialize initial world segments right away
     this.initWorld();
+  }
+
+  public setSelectedMap(map: BiomeType | null) {
+    this.selectedMap = map;
+    if (map) {
+      this.lastBiome = map;
+      this.biomeRunCount = 999;
+    }
   }
 
   public initWorld() {
     this.clearAll();
-    this.nextSegmentZ = -50; // Ensure road exists behind the starting camera!
+    this.nextSegmentZ = -50;
+    this.nextCheckpointIndex = 1;
 
     // Spawn 10 contiguous segments spanning -50m to +450m ahead
     for (let i = 0; i < 10; i++) {
@@ -194,31 +272,54 @@ export class WorldManager {
     this.obstaclesList.forEach((o) => this.scene.remove(o.mesh));
     this.obstaclesList = [];
 
+    this.checkpointsList.forEach((cp) => this.scene.remove(cp.mesh));
+    this.checkpointsList = [];
+
+    if (this.startLineMesh) {
+      this.scene.remove(this.startLineMesh);
+      this.startLineMesh = null;
+    }
+
     if (this.activePickup) {
       this.scene.remove(this.activePickup.mesh);
       this.activePickup = null;
     }
 
+    if (this.playerSpawnedVehicle) {
+      this.scene.remove(this.playerSpawnedVehicle.mesh);
+      this.playerSpawnedVehicle = null;
+    }
+
+    this.remotePlayerMeshes.forEach((p) => this.scene.remove(p.root));
+    this.remotePlayerMeshes.clear();
+
     this.nextSegmentZ = -50;
     this.currentSegmentIndex = 0;
-    this.lastBiome = 'dhaka_city';
+    this.nextCheckpointIndex = 1;
+    this.lastBiome = this.selectedMap || 'dhaka_city';
     this.biomeRunCount = 0;
   }
 
   private selectNextBiome(): BiomeType {
+    if (this.selectedMap) {
+      return this.selectedMap;
+    }
+
     const allBiomes: BiomeType[] = [
       'dhaka_city',
       'old_market',
+      'village_highway',
+      'mountain_pass',
+      'tea_forest',
+      'coastal_drive',
+      'padma_expressway',
+      'rural_village',
+      'grand_circuit',
       'flyover',
       'river_bridge',
-      'village_highway',
-      'industrial_zone',
-      'riverside_road',
-      'bus_terminal',
     ];
 
-    // Maintain district theme for 3 segments (150m) before transitioning
-    if (this.biomeRunCount < 3 && this.currentSegmentIndex > 0) {
+    if (this.biomeRunCount < 4 && this.currentSegmentIndex > 0) {
       this.biomeRunCount++;
       return this.lastBiome;
     }
@@ -240,31 +341,41 @@ export class WorldManager {
 
     const biome = this.selectNextBiome();
 
-    // 1. Solid Flanking Ground Terrain Plane (Extends from X = -100m to +100m)
-    // Ensures the player NEVER looks into an empty void or floating space!
-    const groundMat =
-      biome === 'village_highway'
-        ? this.grassMaterial
-        : biome === 'river_bridge' || biome === 'riverside_road'
-        ? this.waterMaterial
-        : this.cityGroundMaterial;
+    // 1. Solid Flanking Ground Terrain Plane
+    let groundMat = this.cityGroundMaterial;
+    if (biome === 'village_highway' || biome === 'tea_forest') {
+      groundMat = this.grassMaterial;
+    } else if (biome === 'river_bridge' || biome === 'riverside_road') {
+      groundMat = this.waterMaterial;
+    } else if (biome === 'coastal_drive') {
+      groundMat = this.sandMaterial;
+    } else if (biome === 'mountain_pass') {
+      groundMat = this.concreteMaterial;
+    }
 
-    const groundGeo = new THREE.PlaneGeometry(200, SEGMENT_LENGTH);
+    const groundGeo = new THREE.PlaneGeometry(240, SEGMENT_LENGTH);
     groundGeo.rotateX(-Math.PI / 2);
     const groundMesh = new THREE.Mesh(groundGeo, groundMat);
     groundMesh.position.set(0, -0.04, midZ);
     groundMesh.receiveShadow = true;
     root.add(groundMesh);
 
-    // 2. High-Precision Road Surface Plane
+    // 2. Road Surface Plane with Biome-Specific Styling
+    let roadMat = this.roadMaterial;
+    if (biome === 'rural_village' || biome === 'old_market') {
+      roadMat = this.brickRoadMaterial;
+    } else if (biome === 'grand_circuit') {
+      roadMat = this.raceTrackMaterial;
+    }
+
     const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, SEGMENT_LENGTH);
     roadGeo.rotateX(-Math.PI / 2);
-    const roadMesh = new THREE.Mesh(roadGeo, this.roadMaterial);
+    const roadMesh = new THREE.Mesh(roadGeo, roadMat);
     roadMesh.position.set(0, 0, midZ);
     roadMesh.receiveShadow = true;
     root.add(roadMesh);
 
-    // 3. Concrete Curbs & Sidewalks (Seamlessly lining both sides)
+    // 3. Concrete Curbs & Sidewalks (Lining both sides)
     [-ROAD_WIDTH / 2 - 0.8, ROAD_WIDTH / 2 + 0.8].forEach((x) => {
       const curbGeo = new THREE.BoxGeometry(1.6, 0.22, SEGMENT_LENGTH);
       const curb = new THREE.Mesh(curbGeo, this.curbMaterial);
@@ -273,7 +384,32 @@ export class WorldManager {
       root.add(curb);
     });
 
-    // 4. Biome Scenery & Architecture
+    // 4. Start Line Gantry Banner at Z = 0
+    if (zStart <= 0 && zEnd > 0 && !this.startLineMesh) {
+      const startLine = createStartLineModel();
+      startLine.position.set(0, 0, 0);
+      this.scene.add(startLine);
+      this.startLineMesh = startLine;
+    }
+
+    // 5. Automatic Checkpoint Gate placement (every 350 meters)
+    const targetCpZ = this.nextCheckpointIndex * 350;
+    if (zStart <= targetCpZ && zEnd > targetCpZ) {
+      const gate = createCheckpointGateModel();
+      gate.position.set(0, 0, targetCpZ);
+      this.scene.add(gate);
+
+      this.checkpointsList.push({
+        id: this.nextCheckpointIndex,
+        mesh: gate,
+        z: targetCpZ,
+        passed: false,
+      });
+
+      this.nextCheckpointIndex++;
+    }
+
+    // 6. Biome Scenery & Architecture
     this.decorateSegmentScenery(root, biome, zStart);
 
     this.scene.add(root);
@@ -288,7 +424,7 @@ export class WorldManager {
     };
     this.segments.push(chunk);
 
-    // Populate coins, obstacles, traffic AI, and pedestrians (skip start zone)
+    // Populate entities (skip initial start zone around 0)
     if (index > 1) {
       this.populateEntities(chunk);
     }
@@ -303,7 +439,7 @@ export class WorldManager {
       // Tall multi-storey apartments & roadside tea stalls
       [-ROAD_WIDTH / 2 - 8.5, ROAD_WIDTH / 2 + 8.5].forEach((x) => {
         for (let z = zStart + 6; z < zStart + SEGMENT_LENGTH; z += 16) {
-          const height = 15 + Math.random() * 12;
+          const height = 15 + Math.random() * 14;
           const bMat = new THREE.MeshStandardMaterial({
             map: textureFactory.getBuildingFacadeTexture(Math.random() > 0.5 ? 'modern' : 'old_brick'),
             roughness: 0.65,
@@ -338,464 +474,386 @@ export class WorldManager {
           root.add(shop);
         }
       });
-    } else if (biome === 'flyover') {
-      // Highway guardrails & concrete flyover piers
-      [-ROAD_WIDTH / 2 - 0.2, ROAD_WIDTH / 2 + 0.2].forEach((x) => {
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.1, SEGMENT_LENGTH), this.concreteMaterial);
-        rail.position.set(x, 0.55, zStart + SEGMENT_LENGTH / 2);
-        root.add(rail);
-
-        const stripe = new THREE.Mesh(
-          new THREE.BoxGeometry(0.32, 0.15, SEGMENT_LENGTH),
-          new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.4 }),
-        );
-        stripe.position.set(x, 1.1, zStart + SEGMENT_LENGTH / 2);
-        root.add(stripe);
-      });
-
-      const gantry = this.createHighwayGantry('মেয়র হানিফ ফ্লাইওভার', 'MAYOR HANIF FLYOVER • TOLL EXPRESSWAY');
-      gantry.position.set(0, 0, zStart + 25);
-      root.add(gantry);
-    } else if (biome === 'river_bridge') {
-      // Blue steel truss arches
-      [-ROAD_WIDTH / 2 - 0.4, ROAD_WIDTH / 2 + 0.4].forEach((x) => {
-        const archMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.3, metalness: 0.75 });
-        const archBeam = new THREE.Mesh(new THREE.BoxGeometry(0.4, 4.2, SEGMENT_LENGTH), archMat);
-        archBeam.position.set(x, 2.1, zStart + SEGMENT_LENGTH / 2);
-        root.add(archBeam);
-
-        for (let z = zStart + 5; z < zStart + SEGMENT_LENGTH; z += 10) {
-          const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 4.8, 6), archMat);
-          strut.position.set(x, 2.2, z);
-          strut.rotation.z = x > 0 ? 0.3 : -0.3;
-          root.add(strut);
+    } else if (biome === 'mountain_pass') {
+      // Majestic mountain peaks, rocky cliffs, and safety barricades
+      [-ROAD_WIDTH / 2 - 12, ROAD_WIDTH / 2 + 12].forEach((x) => {
+        for (let z = zStart + 10; z < zStart + SEGMENT_LENGTH; z += 22) {
+          const hillGeo = new THREE.ConeGeometry(14 + Math.random() * 8, 22 + Math.random() * 15, 7);
+          const hillMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 });
+          const hill = new THREE.Mesh(hillGeo, hillMat);
+          hill.position.set(x * (1 + Math.random() * 0.4), 10, z);
+          root.add(hill);
         }
       });
-    } else if (biome === 'village_highway') {
-      // Coconut palms & roadside trees
-      [-ROAD_WIDTH / 2 - 3.8, ROAD_WIDTH / 2 + 3.8].forEach((x) => {
+
+      // Yellow steel mountain barricades
+      [-ROAD_WIDTH / 2 - 0.2, ROAD_WIDTH / 2 + 0.2].forEach((x) => {
+        const guard = new THREE.Mesh(
+          new THREE.BoxGeometry(0.24, 0.9, SEGMENT_LENGTH),
+          new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.4 }),
+        );
+        guard.position.set(x, 0.45, zStart + SEGMENT_LENGTH / 2);
+        root.add(guard);
+      });
+    } else if (biome === 'tea_forest') {
+      // Undulating tea bush mounds & tall bamboo stalks
+      [-ROAD_WIDTH / 2 - 4.5, ROAD_WIDTH / 2 + 4.5].forEach((x) => {
+        for (let z = zStart + 4; z < zStart + SEGMENT_LENGTH; z += 8) {
+          const teaBush = new THREE.Mesh(
+            new THREE.SphereGeometry(1.4 + Math.random() * 0.5, 8, 6),
+            new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.85 }),
+          );
+          teaBush.scale.set(1.4, 0.7, 1.4);
+          teaBush.position.set(x + (Math.random() - 0.5) * 2, 0.5, z);
+          root.add(teaBush);
+
+          // Bamboo tree stalks
+          if (Math.random() > 0.4) {
+            const bamboo = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.08, 0.1, 7.5, 6),
+              new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.7 }),
+            );
+            bamboo.position.set(x * 1.5, 3.75, z + 2);
+            root.add(bamboo);
+          }
+        }
+      });
+    } else if (biome === 'coastal_drive') {
+      // Ocean water plane on west flank
+      const oceanGeo = new THREE.PlaneGeometry(80, SEGMENT_LENGTH);
+      oceanGeo.rotateX(-Math.PI / 2);
+      const ocean = new THREE.Mesh(oceanGeo, this.waterMaterial);
+      ocean.position.set(-ROAD_WIDTH / 2 - 45, -0.02, zStart + SEGMENT_LENGTH / 2);
+      root.add(ocean);
+
+      // Sandy dunes & coconut palms on east flank
+      [ROAD_WIDTH / 2 + 4].forEach((x) => {
         for (let z = zStart + 8; z < zStart + SEGMENT_LENGTH; z += 14) {
           const palm = this.createPalmTree();
-          palm.position.set(x + (Math.random() * 2 - 1), 0, z + (Math.random() * 3 - 1.5));
+          palm.position.set(x + Math.random() * 4, 0, z);
           root.add(palm);
         }
       });
-    } else if (biome === 'industrial_zone') {
-      // Brick kilns & cargo containers
-      [-ROAD_WIDTH / 2 - 7, ROAD_WIDTH / 2 + 7].forEach((x) => {
-        for (let z = zStart + 8; z < zStart + SEGMENT_LENGTH; z += 18) {
-          const containerColors = [0xef4444, 0x0284c7, 0x16a34a, 0xf59e0b];
-          const col = containerColors[Math.floor(Math.random() * containerColors.length)];
-          const container = new THREE.Mesh(
-            new THREE.BoxGeometry(4.5, 2.6, 7.5),
-            new THREE.MeshStandardMaterial({ color: col, roughness: 0.4, metalness: 0.5 }),
-          );
-          container.position.set(x, 1.3, z);
-          root.add(container);
+
+      // Wooden Fishing Boats on shore
+      if (Math.random() > 0.5) {
+        const boat = this.createNoukaBoat();
+        boat.position.set(-ROAD_WIDTH / 2 - 8, 0.2, zStart + 20);
+        boat.rotation.y = Math.PI / 3;
+        root.add(boat);
+      }
+    } else if (biome === 'padma_expressway' || biome === 'river_bridge') {
+      // Massive steel truss arches and bridge suspension cables
+      [-ROAD_WIDTH / 2 - 1.2, ROAD_WIDTH / 2 + 1.2].forEach((x) => {
+        for (let z = zStart + 10; z < zStart + SEGMENT_LENGTH; z += 25) {
+          const pier = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, 12, 10), this.concreteMaterial);
+          pier.position.set(x, 6, z);
+          root.add(pier);
+
+          const truss = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 26), this.concreteMaterial);
+          truss.position.set(x, 11.5, z);
+          root.add(truss);
         }
       });
-    } else if (biome === 'riverside_road') {
-      // Nouka boats moored near bank
-      const boat = this.createNoukaBoat();
-      boat.position.set(-ROAD_WIDTH / 2 - 14, -0.6, zStart + 22);
-      root.add(boat);
-
-      for (let z = zStart + 10; z < zStart + SEGMENT_LENGTH; z += 16) {
-        const palm = this.createPalmTree();
-        palm.position.set(ROAD_WIDTH / 2 + 4, 0, z);
-        root.add(palm);
-      }
-    } else {
-      // Bus Terminal
-      const gantry = this.createHighwayGantry('সায়েদাবাদ বাস টার্মিনাল', 'SAYEDABAD CENTRAL INTERDISTRICT TERMINAL');
-      gantry.position.set(0, 0, zStart + 20);
-      root.add(gantry);
-
-      [-ROAD_WIDTH / 2 - 4.5, ROAD_WIDTH / 2 + 4.5].forEach((x) => {
-        const depotCanopy = new THREE.Mesh(
-          new THREE.BoxGeometry(5.0, 0.2, 24),
-          new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.4 }),
+    } else if (biome === 'grand_circuit') {
+      // Racing grandstands & sponsor banners
+      [-ROAD_WIDTH / 2 - 6, ROAD_WIDTH / 2 + 6].forEach((x) => {
+        const stand = new THREE.Mesh(
+          new THREE.BoxGeometry(6, 4.5, SEGMENT_LENGTH * 0.8),
+          new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6 }),
         );
-        depotCanopy.position.set(x, 4.2, zStart + 25);
-        root.add(depotCanopy);
+        stand.position.set(x, 2.25, zStart + SEGMENT_LENGTH / 2);
+        root.add(stand);
+      });
+    } else if (biome === 'rural_village') {
+      // Rustic thatched huts, banyan trees, and ponds
+      [-ROAD_WIDTH / 2 - 4.5, ROAD_WIDTH / 2 + 4.5].forEach((x) => {
+        for (let z = zStart + 10; z < zStart + SEGMENT_LENGTH; z += 18) {
+          const hut = this.createVillageHut();
+          hut.position.set(x, 0, z);
+          root.add(hut);
+
+          const tree = this.createBanyanTree();
+          tree.position.set(x * 1.6, 0, z + 7);
+          root.add(tree);
+        }
+      });
+    } else {
+      // Default village highway: palms, fences, and greenery
+      [-ROAD_WIDTH / 2 - 4.5, ROAD_WIDTH / 2 + 4.5].forEach((x) => {
+        for (let z = zStart + 8; z < zStart + SEGMENT_LENGTH; z += 14) {
+          const palm = this.createPalmTree();
+          palm.position.set(x, 0, z);
+          root.add(palm);
+        }
       });
     }
   }
 
-  private createStreetlight(): THREE.Group {
-    const pole = new THREE.Group();
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 6.5, 8), this.concreteMaterial);
-    mast.position.y = 3.25;
-    pole.add(mast);
-
-    const lamp = new THREE.Mesh(
-      new THREE.SphereGeometry(0.2, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfef08a, emissiveIntensity: 1 }),
-    );
-    lamp.position.set(0, 6.2, 0);
-    pole.add(lamp);
-    return pole;
-  }
-
-  private createTongerDokan(): THREE.Group {
-    const stall = new THREE.Group();
-    const counter = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 1.1, 1.6),
-      new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.85 }),
-    );
-    counter.position.y = 0.55;
-    stall.add(counter);
-
-    const tinRoof = new THREE.Mesh(
-      new THREE.BoxGeometry(3.0, 0.08, 2.2),
-      new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.3, metalness: 0.7 }),
-    );
-    tinRoof.position.y = 2.3;
-    tinRoof.rotation.z = -0.15;
-    stall.add(tinRoof);
-
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.8, 0.5),
-      new THREE.MeshStandardMaterial({
-        map: textureFactory.getSignboardTexture('টং চা দোকান', 'FRESH CHAI & BISCUITS', '#b91c1c', '#ffffff'),
-      }),
-    );
-    sign.position.set(0, 1.9, 0.9);
-    stall.add(sign);
-    return stall;
-  }
-
-  private createMarketShop(isLeft: boolean): THREE.Group {
-    const shop = new THREE.Group();
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(3.8, 3.8, 5.8), this.brickMaterial);
-    wall.position.y = 1.9;
-    shop.add(wall);
-
-    const awning = new THREE.Mesh(
-      new THREE.BoxGeometry(1.6, 0.08, 5.6),
-      new THREE.MeshStandardMaterial({ color: isLeft ? 0xf59e0b : 0x06b6d4, roughness: 0.5 }),
-    );
-    awning.position.set(isLeft ? 1.6 : -1.6, 2.2, 0);
-    awning.rotation.z = isLeft ? 0.35 : -0.35;
-    shop.add(awning);
-    return shop;
-  }
-
-  private createHighwayGantry(title: string, sub: string): THREE.Group {
-    const gantry = new THREE.Group();
-    [-7.5, 7.5].forEach((x) => {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 5.8, 8), this.concreteMaterial);
-      post.position.set(x, 2.9, 0);
-      gantry.add(post);
-    });
-
-    const crossBeam = new THREE.Mesh(new THREE.BoxGeometry(16, 0.35, 0.35), this.concreteMaterial);
-    crossBeam.position.set(0, 5.6, 0);
-    gantry.add(crossBeam);
-
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(6.4, 1.6),
-      new THREE.MeshStandardMaterial({
-        map: textureFactory.getSignboardTexture(title, sub, '#065f46', '#ffffff'),
-        roughness: 0.3,
-      }),
-    );
-    sign.position.set(0, 4.4, 0.18);
-    gantry.add(sign);
-    return gantry;
-  }
-
-  private createPalmTree(): THREE.Group {
-    const tree = new THREE.Group();
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.3, 7.5, 8),
-      new THREE.MeshStandardMaterial({ color: 0x573a24, roughness: 0.85 }),
-    );
-    trunk.position.y = 3.75;
-    trunk.rotation.z = 0.06;
-    tree.add(trunk);
-
-    const crown = new THREE.Group();
-    crown.position.set(0.25, 7.5, 0);
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.6 });
-    for (let i = 0; i < 7; i++) {
-      const frond = new THREE.Mesh(new THREE.ConeGeometry(0.6, 3.2, 5), leafMat);
-      frond.rotation.z = Math.PI / 3;
-      frond.rotation.y = (i * Math.PI * 2) / 7;
-      crown.add(frond);
-    }
-    tree.add(crown);
-    return tree;
-  }
-
-  private createNoukaBoat(): THREE.Group {
-    const boat = new THREE.Group();
-    const hull = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.7, 6.5),
-      new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.8 }),
-    );
-    boat.add(hull);
-
-    const canopy = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.2, 1.2, 3.5, 8, 1, false, 0, Math.PI),
-      new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9, side: THREE.DoubleSide }),
-    );
-    canopy.rotation.z = Math.PI / 2;
-    canopy.position.y = 0.8;
-    boat.add(canopy);
-    return boat;
-  }
-
-  // --- POPULATE ENTITIES WITH ENHANCED TRAFFIC VARIETY ---
+  // --- ENTITY POPULATION (COINS, OBSTACLES, TRAFFIC, PEDESTRIANS) ---
   private populateEntities(chunk: SegmentChunk) {
-    const zMid = chunk.zStart + SEGMENT_LENGTH / 2;
+    const { zStart, zEnd } = chunk;
 
-    // 1. Coins Arc or Line
-    const chosenLane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
-    const isArc = Math.random() > 0.5;
-
-    for (let i = 0; i < 5; i++) {
-      const coinZ = chunk.zStart + 10 + i * 5;
-      const coinY = isArc ? 0.75 + Math.sin((i / 4) * Math.PI) * 1.4 : 0.75;
-
-      const coinMesh = new THREE.Mesh(this.coinGeometry, this.coinMaterial);
-      coinMesh.position.set(chosenLane, coinY, coinZ);
-      this.scene.add(coinMesh);
-
-      this.coinsList.push({
-        mesh: coinMesh,
-        x: chosenLane,
-        y: coinY,
-        z: coinZ,
-        collected: false,
-      });
-    }
-
-    // 2. Obstacles
-    if (Math.random() > 0.4) {
-      const obsLane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
-      if (obsLane !== chosenLane) {
-        const obs = this.createObstacle(obsLane, zMid + (Math.random() * 8 - 4));
-        this.obstaclesList.push(obs);
+    // Coins pattern
+    const coinPattern = Math.random();
+    if (coinPattern > 0.25) {
+      const lane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
+      for (let z = zStart + 10; z < zEnd - 10; z += 4) {
+        const coinMesh = new THREE.Mesh(this.coinGeometry, this.coinMaterial);
+        coinMesh.position.set(lane, 0.65, z);
+        this.scene.add(coinMesh);
+        this.coinsList.push({
+          mesh: coinMesh,
+          x: lane,
+          y: 0.65,
+          z,
+          collected: false,
+        });
       }
     }
 
-    // 3. Traffic Vehicle Spawning (All 8 Bangladeshi vehicle types!)
-    if (Math.random() > 0.2) {
-      const trafficLane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
-      this.spawnTrafficVehicle(trafficLane, chunk.zStart + 25);
+    // Road Obstacle
+    if (Math.random() > 0.45) {
+      const lane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
+      const obsZ = zStart + 18 + Math.random() * 15;
+      const obsType = Math.random() > 0.5 ? 'barrier' : 'wire_barrier';
+
+      const obsGroup = new THREE.Group();
+      if (obsType === 'barrier') {
+        const bar = new THREE.Mesh(
+          new THREE.BoxGeometry(2.4, 0.75, 0.35),
+          new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5 }),
+        );
+        bar.position.y = 0.38;
+        bar.castShadow = true;
+        obsGroup.add(bar);
+
+        obsGroup.position.set(lane, 0, obsZ);
+        this.scene.add(obsGroup);
+        this.obstaclesList.push({
+          mesh: obsGroup,
+          type: 'barrier',
+          x: lane,
+          z: obsZ,
+          width: 2.4,
+          length: 0.4,
+          height: 0.75,
+        });
+      } else {
+        // High wire barrier (duck under)
+        const postMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
+        [-1.2, 1.2].forEach((px) => {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.8, 6), postMat);
+          post.position.set(px, 0.9, 0);
+          obsGroup.add(post);
+        });
+
+        const wire = new THREE.Mesh(
+          new THREE.BoxGeometry(2.5, 0.2, 0.05),
+          new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.5 }),
+        );
+        wire.position.set(0, 1.45, 0);
+        obsGroup.add(wire);
+
+        obsGroup.position.set(lane, 0, obsZ);
+        this.scene.add(obsGroup);
+        this.obstaclesList.push({
+          mesh: obsGroup,
+          type: 'wire_barrier',
+          x: lane,
+          z: obsZ,
+          width: 2.5,
+          length: 0.3,
+          height: 1.6,
+          canDuckUnder: true,
+        });
+      }
     }
 
-    // 4. Sidewalk Pedestrians
-    if (Math.random() > 0.4) {
-      const ped = createPedestrianModel();
-      const pedSide = Math.random() > 0.5 ? 1 : -1;
-      const pedX = pedSide * (ROAD_LANES[3] + 2.0);
-      const pedZ = chunk.zStart + 15 + Math.random() * 20;
-      ped.group.position.set(pedX, 0, pedZ);
-      this.scene.add(ped.group);
+    // Traffic AI
+    if (Math.random() > 0.35) {
+      const lane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
+      const types: ('cng' | 'autorickshaw' | 'bus' | 'car' | 'truck')[] = ['cng', 'autorickshaw', 'bus', 'car', 'truck'];
+      const type = types[Math.floor(Math.random() * types.length)];
+      const trafficZ = zStart + 22 + Math.random() * 15;
 
-      this.pedestriansList.push({
-        group: ped.group,
-        updateAnimation: ped.updateAnimation,
-        x: pedX,
-        z: pedZ,
-        walkSpeed: (Math.random() * 1.2 + 0.8) * (Math.random() > 0.5 ? 1 : -1),
+      let bundle: VehicleMeshBundle;
+      let width = 1.6;
+      let length = 3.0;
+      let height = 2.0;
+      let speed = 18;
+      let canSkitch = false;
+
+      if (type === 'cng') {
+        bundle = createCngModel();
+        width = 1.5;
+        length = 2.6;
+        height = 2.0;
+        speed = 22;
+        canSkitch = true;
+      } else if (type === 'autorickshaw') {
+        bundle = createAutoRickshawModel();
+        width = 1.45;
+        length = 2.5;
+        height = 1.95;
+        speed = 20;
+        canSkitch = true;
+      } else if (type === 'bus') {
+        bundle = createBusModel();
+        width = 2.4;
+        length = 6.2;
+        height = 3.2;
+        speed = 24;
+      } else if (type === 'truck') {
+        bundle = createTruckModel();
+        width = 2.2;
+        length = 5.6;
+        height = 2.8;
+        speed = 20;
+      } else {
+        bundle = createCarModel();
+        width = 1.7;
+        length = 3.8;
+        height = 1.6;
+        speed = 26;
+      }
+
+      bundle.root.position.set(lane, 0, trafficZ);
+      this.scene.add(bundle.root);
+
+      this.trafficList.push({
+        mesh: bundle.root,
+        bundle,
+        type,
+        lane,
+        targetLane: lane,
+        laneTransition: 0,
+        x: lane,
+        z: trafficZ,
+        speed,
+        targetSpeed: speed,
+        length,
+        width,
+        height,
+        canSkitch,
+        aiState: 'cruising',
+        scanTimer: Math.random() * 0.2,
       });
     }
   }
 
-  private createObstacle(x: number, z: number): RoadObstacle {
-    const root = new THREE.Group();
-    root.position.set(x, 0, z);
+  // --- SPAWN VEHICLE ON ROAD (CALLED FROM PHONE GARAGE) ---
+  public spawnPlayerVehicle(stage: VehicleStage, x: number, z: number): PlayerSpawnedVehicleEntity {
+    this.removePlayerSpawnedVehicle();
 
-    const typeRoll = Math.random();
-    let type: RoadObstacle['type'] = 'barrier';
-    let width = 2.2;
-    let length = 0.8;
-    let height = 1.0;
-    let canDuckUnder = false;
+    const bundle = createVehicleBundleForStage(stage);
+    bundle.root.position.set(x, 0, z);
+    this.scene.add(bundle.root);
 
-    if (typeRoll < 0.45) {
-      type = 'barrier';
-      width = 2.4;
-      height = 1.2;
-      const bar = new THREE.Mesh(
-        new THREE.BoxGeometry(2.4, 0.9, 0.2),
-        new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.5 }),
-      );
-      bar.position.y = 0.6;
-      bar.castShadow = true;
-      root.add(bar);
-
-      const stripe = new THREE.Mesh(
-        new THREE.BoxGeometry(2.42, 0.25, 0.22),
-        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 }),
-      );
-      stripe.position.y = 0.6;
-      root.add(stripe);
-    } else if (typeRoll < 0.75) {
-      type = 'wire_barrier';
-      canDuckUnder = true;
-      height = 2.2;
-      width = 2.8;
-
-      const poleMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
-      [-1.3, 1.3].forEach((px) => {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.2, 6), poleMat);
-        post.position.set(px, 1.1, 0);
-        root.add(post);
-      });
-
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.8, 8), poleMat);
-      bar.rotation.z = Math.PI / 2;
-      bar.position.y = 1.6;
-      root.add(bar);
-
-      const cloth = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.2, 0.6),
-        new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.6 }),
-      );
-      cloth.position.y = 1.4;
-      root.add(cloth);
-    } else {
-      type = 'fruit_cart';
-      width = 1.8;
-      height = 1.1;
-
-      const cart = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.6, 1.8),
-        new THREE.MeshStandardMaterial({ color: 0x573a24, roughness: 0.8 }),
-      );
-      cart.position.y = 0.45;
-      cart.castShadow = true;
-      root.add(cart);
-
-      const fruitMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.4 });
-      for (let i = 0; i < 4; i++) {
-        const fruit = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), fruitMat);
-        fruit.position.set((i % 2) * 0.45 - 0.22, 0.85, Math.floor(i / 2) * 0.45 - 0.22);
-        root.add(fruit);
-      }
-    }
-
-    this.scene.add(root);
-    return { mesh: root, type, x, z, width, length, height, canDuckUnder };
-  }
-
-  // --- SPAWN TRAFFIC VEHICLE (8 DIVERSE BANGLADESH VEHICLE TYPES) ---
-  private spawnTrafficVehicle(laneX: number, z: number) {
-    const types: TrafficEntity['type'][] = [
-      'cng',
-      'autorickshaw',
-      'bus',
-      'truck',
-      'car',
-      'minibus',
-      'bike',
-      'bicycle',
-    ];
-    const chosenType = types[Math.floor(Math.random() * types.length)];
-
-    let bundle: VehicleMeshBundle;
-    let width = 1.4;
-    let length = 2.4;
-    let height = 2.0;
-    let speed = 11 + Math.random() * 5;
-    let canSkitch = false;
-
-    if (chosenType === 'cng') {
-      bundle = createCngModel();
-      width = 1.5;
-      length = 2.6;
-      height = 2.1;
-      speed = 13 + Math.random() * 5;
-      canSkitch = true;
-    } else if (chosenType === 'autorickshaw') {
-      bundle = createAutoRickshawModel();
-      width = 1.45;
-      length = 2.5;
-      height = 2.0;
-      speed = 11 + Math.random() * 4;
-      canSkitch = true;
-    } else if (chosenType === 'bus') {
-      bundle = createBusModel();
-      width = 2.4;
-      length = 6.2;
-      height = 3.2;
-      speed = 10 + Math.random() * 4;
-    } else if (chosenType === 'truck') {
-      bundle = createTruckModel();
-      width = 2.2;
-      length = 5.8;
-      height = 2.8;
-      speed = 10 + Math.random() * 4;
-    } else if (chosenType === 'car') {
-      bundle = createCarModel();
-      width = 1.7;
-      length = 3.8;
-      height = 1.6;
-      speed = 15 + Math.random() * 6;
-    } else if (chosenType === 'minibus') {
-      bundle = createMinibusModel();
-      width = 1.85;
-      length = 4.4;
-      height = 2.2;
-      speed = 12 + Math.random() * 5;
-    } else if (chosenType === 'bicycle') {
-      bundle = createBicycleModel();
-      width = 0.95;
-      length = 1.8;
-      height = 1.75;
-      speed = 9 + Math.random() * 3;
-    } else {
-      bundle = createMotorcycleModel();
-      width = 1.05;
-      length = 2.0;
-      height = 1.65;
-      speed = 16 + Math.random() * 6;
-    }
-
-    const mesh = bundle.root;
-    mesh.position.set(laneX, 0, z);
-    this.scene.add(mesh);
-
-    this.trafficList.push({
-      mesh,
+    this.playerSpawnedVehicle = {
+      mesh: bundle.root,
       bundle,
-      type: chosenType,
-      lane: laneX,
-      targetLane: laneX,
-      laneTransition: 0,
-      x: laneX,
+      stage,
+      x,
       z,
-      speed,
-      targetSpeed: speed,
-      length,
-      width,
-      height,
-      canSkitch,
-      skitchPoint: bundle.skitchPoint,
-      aiState: 'cruising',
-      scanTimer: Math.random() * 0.3,
+    };
+
+    return this.playerSpawnedVehicle;
+  }
+
+  public getPlayerSpawnedVehicle(): PlayerSpawnedVehicleEntity | null {
+    return this.playerSpawnedVehicle;
+  }
+
+  public removePlayerSpawnedVehicle() {
+    if (this.playerSpawnedVehicle) {
+      this.scene.remove(this.playerSpawnedVehicle.mesh);
+      this.playerSpawnedVehicle = null;
+    }
+  }
+
+  // --- MULTIPLAYER REMOTE PLAYERS SYNC ---
+  public updateRemotePlayers(players: RemotePlayerState[]) {
+    const activeIds = new Set(players.map((p) => p.id));
+
+    // Remove disconnected peers
+    this.remotePlayerMeshes.forEach((meshInfo, id) => {
+      if (!activeIds.has(id)) {
+        this.scene.remove(meshInfo.root);
+        this.remotePlayerMeshes.delete(id);
+      }
+    });
+
+    // Update / create active peers
+    players.forEach((player) => {
+      let peer = this.remotePlayerMeshes.get(player.id);
+      if (!peer || peer.vehicleStage !== player.vehicle) {
+        if (peer) this.scene.remove(peer.root);
+
+        const bundle = createVehicleBundleForStage(player.vehicle);
+
+        // Name tag billboard canvas
+        const tagCanvas = document.createElement('canvas');
+        tagCanvas.width = 256;
+        tagCanvas.height = 64;
+        const tctx = tagCanvas.getContext('2d')!;
+        tctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        tctx.roundRect(4, 4, 248, 56, 12);
+        tctx.fill();
+        tctx.strokeStyle = '#38bdf8';
+        tctx.lineWidth = 3;
+        tctx.stroke();
+        tctx.fillStyle = '#ffffff';
+        tctx.font = 'bold 26px sans-serif';
+        tctx.textAlign = 'center';
+        tctx.textBaseline = 'middle';
+        tctx.fillText(player.name, 128, 32);
+
+        const tagTex = new THREE.CanvasTexture(tagCanvas);
+        tagTex.colorSpace = THREE.SRGBColorSpace;
+        const nameTag = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.4), new THREE.MeshBasicMaterial({ map: tagTex, transparent: true }));
+        nameTag.position.set(0, 2.4, 0);
+        bundle.root.add(nameTag);
+
+        this.scene.add(bundle.root);
+        peer = {
+          root: bundle.root,
+          bundle,
+          nameTag,
+          currentX: player.posX,
+          currentY: player.posY,
+          currentZ: player.posZ,
+          targetX: player.posX,
+          targetY: player.posY,
+          targetZ: player.posZ,
+          targetRotationY: player.rotationY || 0,
+          vehicleStage: player.vehicle,
+        };
+        this.remotePlayerMeshes.set(player.id, peer);
+      }
+
+      peer.targetX = player.posX;
+      peer.targetY = player.posY;
+      peer.targetZ = player.posZ;
+      peer.targetRotationY = player.rotationY || 0;
     });
   }
 
-  // --- SPAWN VEHICLE PICKUP ---
-  public spawnVehiclePickup(targetVehicle: VehicleStage, currentZ: number): boolean {
+  // --- VEHICLE PICKUPS ---
+  public spawnVehiclePickup(targetVehicle: VehicleStage, playerZ: number): boolean {
     if (this.activePickup) return false;
 
-    const pickupLane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
-    const pickupZ = currentZ + 100;
+    const pickupZ = playerZ + 75;
+    const lane = ROAD_LANES[Math.floor(Math.random() * ROAD_LANES.length)];
 
     const mesh = createVehiclePickupMesh(targetVehicle);
-    mesh.position.set(pickupLane, 0, pickupZ);
+    mesh.position.set(lane, 0, pickupZ);
     this.scene.add(mesh);
 
     this.activePickup = {
       mesh,
       targetVehicle,
-      x: pickupLane,
+      x: lane,
       y: 0,
       z: pickupZ,
       collected: false,
@@ -815,12 +873,16 @@ export class WorldManager {
     }
   }
 
-  // Road center is 0 (straight road)
-  public getRoadCenterX(_z: number): number {
-    return 0;
+  public getCheckpointsList(): CheckpointEntity[] {
+    return this.checkpointsList;
+  }
+
+  public resetCheckpointStates() {
+    this.checkpointsList.forEach((cp) => (cp.passed = false));
   }
 
   public getCurrentBiome(playerZ: number): BiomeConfig {
+    if (this.selectedMap) return BIOME_CONFIGS[this.selectedMap];
     for (const seg of this.segments) {
       if (playerZ >= seg.zStart && playerZ <= seg.zEnd) {
         return BIOME_CONFIGS[seg.biome];
@@ -829,10 +891,53 @@ export class WorldManager {
     return BIOME_CONFIGS['dhaka_city'];
   }
 
-  // --- PER-FRAME UPDATE ---
+  public getCoinsList(): CollectibleCoin[] {
+    return this.coinsList;
+  }
+
+  public getObstaclesList(): RoadObstacle[] {
+    return this.obstaclesList;
+  }
+
+  public getTrafficList(): TrafficEntity[] {
+    return this.trafficList;
+  }
+
+  public getMinimapData(playerZ: number): MinimapEntity[] {
+    const list: MinimapEntity[] = [];
+
+    // Checkpoints
+    this.checkpointsList.forEach((cp) => {
+      const dz = cp.z - playerZ;
+      if (dz >= -10 && dz <= 140) {
+        list.push({ id: `cp_${cp.id}`, type: 'checkpoint', x: 0, z: dz });
+      }
+    });
+
+    // Traffic
+    this.trafficList.forEach((t, i) => {
+      const dz = t.z - playerZ;
+      if (dz >= -10 && dz <= 120) {
+        list.push({ id: `tr_${i}`, type: 'traffic', x: t.x, z: dz });
+      }
+    });
+
+    // Remote Players
+    this.remotePlayerMeshes.forEach((p, id) => {
+      const dz = p.currentZ - playerZ;
+      if (dz >= -15 && dz <= 120) {
+        list.push({ id: `rem_${id}`, type: 'remote_player', x: p.currentX, z: dz });
+      }
+    });
+
+    return list;
+  }
+
+  // --- PER-FRAME WORLD UPDATE ---
   public update(playerZ: number, delta: number, totalTime: number) {
-    // 1. Recycle chunks behind player
     const recycleThreshold = playerZ - 60;
+
+    // 1. Recycle segments
     while (this.segments.length > 0 && this.segments[0].zEnd < recycleThreshold) {
       const old = this.segments.shift()!;
       this.scene.remove(old.root);
@@ -858,7 +963,6 @@ export class WorldManager {
       } else {
         const bob = Math.sin(totalTime * 3.0) * 0.25;
         this.activePickup.mesh.position.y = bob;
-
         const preview = this.activePickup.mesh.getObjectByName('preview_vehicle');
         if (preview) {
           preview.rotation.y = totalTime * 1.6;
@@ -866,10 +970,9 @@ export class WorldManager {
       }
     }
 
-    // 4. Update Functioning Traffic AI
+    // 4. Update Traffic AI
     for (let i = this.trafficList.length - 1; i >= 0; i--) {
       const t = this.trafficList[i];
-
       t.scanTimer += delta;
       if (t.scanTimer > 0.25) {
         t.scanTimer = 0;
@@ -906,10 +1009,8 @@ export class WorldManager {
       const p = this.pedestriansList[i];
       p.z += p.walkSpeed * delta;
       p.group.position.z = p.z;
-
       const dist = Math.abs(p.z - playerZ);
       p.updateAnimation(totalTime, dist < 8);
-
       if (p.z < recycleThreshold || p.z > playerZ + 300) {
         this.scene.remove(p.group);
         this.pedestriansList.splice(i, 1);
@@ -924,11 +1025,21 @@ export class WorldManager {
         this.obstaclesList.splice(i, 1);
       }
     }
+
+    // 7. Update Remote Players Animation & Position interpolation
+    this.remotePlayerMeshes.forEach((peer) => {
+      peer.currentX = THREE.MathUtils.damp(peer.currentX, peer.targetX, 14, delta);
+      peer.currentY = THREE.MathUtils.damp(peer.currentY, peer.targetY, 14, delta);
+      peer.currentZ = THREE.MathUtils.damp(peer.currentZ, peer.targetZ, 14, delta);
+
+      peer.root.position.set(peer.currentX, peer.currentY, peer.currentZ);
+      peer.root.rotation.y = peer.targetRotationY;
+      peer.bundle.updateAnimation(totalTime, 20, false, false, false, 0);
+    });
   }
 
   private updateTrafficAi(entity: TrafficEntity) {
     let isBlocked = false;
-
     for (const obs of this.obstaclesList) {
       const dz = obs.z - entity.z;
       const dx = Math.abs(obs.x - entity.x);
@@ -950,97 +1061,142 @@ export class WorldManager {
       }
     }
 
-    if (isBlocked) {
-      entity.targetSpeed = Math.max(5, entity.speed * 0.65);
-      entity.aiState = 'braking';
+    if (isBlocked && entity.aiState === 'cruising') {
+      const currentLaneIdx = ROAD_LANES.indexOf(entity.lane);
+      const possibleLanes: number[] = [];
+      if (currentLaneIdx > 0) possibleLanes.push(ROAD_LANES[currentLaneIdx - 1]);
+      if (currentLaneIdx < ROAD_LANES.length - 1) possibleLanes.push(ROAD_LANES[currentLaneIdx + 1]);
 
-      const currentIdx = ROAD_LANES.findIndex((l) => Math.abs(l - entity.lane) < 0.8);
-      const possible: number[] = [];
-      if (currentIdx > 0) possible.push(ROAD_LANES[currentIdx - 1]);
-      if (currentIdx < ROAD_LANES.length - 1) possible.push(ROAD_LANES[currentIdx + 1]);
-
-      for (const cand of possible) {
-        let clear = true;
-        for (const other of this.trafficList) {
-          if (other === entity) continue;
-          if (Math.abs(other.x - cand) < 1.4 && Math.abs(other.z - entity.z) < 14) {
-            clear = false;
-            break;
-          }
-        }
-        if (clear) {
-          entity.targetLane = cand;
-          entity.laneTransition = 0;
-          entity.aiState = 'changing_lane';
-          break;
-        }
+      if (possibleLanes.length > 0) {
+        const target = possibleLanes[Math.floor(Math.random() * possibleLanes.length)];
+        entity.targetLane = target;
+        entity.laneTransition = 0;
+        entity.aiState = 'changing_lane';
+      } else {
+        entity.targetSpeed = 10;
+        entity.aiState = 'braking';
       }
-    } else {
-      entity.targetSpeed =
-        entity.type === 'bike'
-          ? 18
-          : entity.type === 'car'
-          ? 16
-          : entity.type === 'cng'
-          ? 14
-          : entity.type === 'minibus'
-          ? 12
-          : 11;
+    } else if (!isBlocked && entity.aiState === 'braking') {
+      entity.targetSpeed = 22;
       entity.aiState = 'cruising';
     }
   }
 
-  public getMinimapData(playerZ: number): MinimapEntity[] {
-    const list: MinimapEntity[] = [];
+  // --- Helper Scenery Builders ---
+  private createStreetlight(): THREE.Group {
+    const group = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 5.2, 8), this.concreteMaterial);
+    pole.position.y = 2.6;
+    group.add(pole);
 
-    this.trafficList.forEach((t, i) => {
-      const relZ = t.z - playerZ;
-      if (relZ > -15 && relZ < 100) {
-        list.push({
-          id: `traffic_${i}`,
-          type: t.type === 'cng' ? 'cng' : t.type === 'bus' || t.type === 'truck' ? 'bus' : 'traffic',
-          x: t.x,
-          z: relZ,
-        });
-      }
-    });
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.08, 0.08), this.concreteMaterial);
+    arm.position.set(0.35, 5.1, 0);
+    group.add(arm);
 
-    this.obstaclesList.forEach((o, i) => {
-      const relZ = o.z - playerZ;
-      if (relZ > -5 && relZ < 90) {
-        list.push({
-          id: `obs_${i}`,
-          type: 'obstacle',
-          x: o.x,
-          z: relZ,
-        });
-      }
-    });
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfef08a, emissiveIntensity: 1.5 }),
+    );
+    lamp.position.set(0.7, 5.0, 0);
+    group.add(lamp);
+    return group;
+  }
 
-    if (this.activePickup && !this.activePickup.collected) {
-      const relZ = this.activePickup.z - playerZ;
-      if (relZ > -10 && relZ < 120) {
-        list.push({
-          id: 'pickup_beacon',
-          type: 'pickup',
-          x: this.activePickup.x,
-          z: relZ,
-        });
-      }
+  private createTongerDokan(): THREE.Group {
+    const group = new THREE.Group();
+    const stallMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
+    const canopyMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5 });
+
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.9, 1.4), stallMat);
+    bench.position.y = 0.45;
+    group.add(bench);
+
+    const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 1.8), canopyMat);
+    canopy.position.y = 1.9;
+    group.add(canopy);
+    return group;
+  }
+
+  private createMarketShop(isLeft: boolean): THREE.Group {
+    const group = new THREE.Group();
+    const shop = new THREE.Mesh(new THREE.BoxGeometry(5.5, 4.2, 8.5), this.brickMaterial);
+    shop.position.set(isLeft ? -2.75 : 2.75, 2.1, 0);
+    group.add(shop);
+
+    const canopy = new THREE.Mesh(
+      new THREE.BoxGeometry(2.2, 0.1, 8.2),
+      new THREE.MeshStandardMaterial({ color: isLeft ? 0x0284c7 : 0xe11d48, roughness: 0.5 }),
+    );
+    canopy.position.set(isLeft ? 0.8 : -0.8, 2.4, 0);
+    canopy.rotation.z = isLeft ? 0.2 : -0.2;
+    group.add(canopy);
+    return group;
+  }
+
+  private createPalmTree(): THREE.Group {
+    const group = new THREE.Group();
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9 });
+    const leavesMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.7 });
+
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.32, 7.5, 8), trunkMat);
+    trunk.position.y = 3.75;
+    group.add(trunk);
+
+    for (let i = 0; i < 6; i++) {
+      const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.8, 3.2, 5), leavesMat);
+      leaf.position.set(0, 7.2, 0);
+      leaf.rotation.set((Math.PI / 4) * Math.sin((i * Math.PI) / 3), 0, (Math.PI / 4) * Math.cos((i * Math.PI) / 3));
+      group.add(leaf);
     }
-
-    return list;
+    return group;
   }
 
-  public getTrafficList(): TrafficEntity[] {
-    return this.trafficList;
+  private createNoukaBoat(): THREE.Group {
+    const group = new THREE.Group();
+    const hullMat = new THREE.MeshStandardMaterial({ color: 0x292524, roughness: 0.8 });
+    const canopyMat = new THREE.MeshStandardMaterial({ color: 0xca8a04, roughness: 0.85 });
+
+    const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.4, 4.8, 8), hullMat);
+    hull.rotation.z = Math.PI / 2;
+    hull.scale.set(0.5, 1, 1);
+    group.add(hull);
+
+    const roof = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 2.4, 8, 1, true, 0, Math.PI), canopyMat);
+    roof.rotation.z = Math.PI / 2;
+    roof.position.y = 0.35;
+    group.add(roof);
+    return group;
   }
 
-  public getCoinsList(): CollectibleCoin[] {
-    return this.coinsList;
+  private createVillageHut(): THREE.Group {
+    const group = new THREE.Group();
+    const mudMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.95 });
+    const thatchMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.9 });
+
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2.2, 3.2), mudMat);
+    wall.position.y = 1.1;
+    group.add(wall);
+
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(2.8, 1.4, 4), thatchMat);
+    roof.position.y = 2.8;
+    roof.rotation.y = Math.PI / 4;
+    group.add(roof);
+    return group;
   }
 
-  public getObstaclesList(): RoadObstacle[] {
-    return this.obstaclesList;
+  private createBanyanTree(): THREE.Group {
+    const group = new THREE.Group();
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x44403c, roughness: 0.9 });
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x166534, roughness: 0.8 });
+
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1.2, 5.5, 8), trunkMat);
+    trunk.position.y = 2.75;
+    group.add(trunk);
+
+    const crown = new THREE.Mesh(new THREE.SphereGeometry(4.2, 10, 8), foliageMat);
+    crown.scale.set(1.4, 0.7, 1.4);
+    crown.position.y = 5.8;
+    group.add(crown);
+    return group;
   }
 }

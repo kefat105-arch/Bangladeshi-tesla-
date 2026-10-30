@@ -130,6 +130,45 @@ class SoundManager {
           filter.type = 'lowpass';
           filter.frequency.setValueAtTime(700, now);
           gain.gain.setValueAtTime(this.soundVolume * 0.2, now);
+        } else if (vehicle === 'sports_motorcycle') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(105, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(750, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.22, now);
+        } else if (vehicle === 'standard_motorcycle') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(80, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(580, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.2, now);
+        } else if (vehicle === 'scooter') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(120, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(550, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.16, now);
+        } else if (vehicle === 'sports_car') {
+          // High-rev V10 growl
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(65, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(850, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.26, now);
+        } else if (vehicle === 'luxury_car') {
+          // Quiet electric turbine hum
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(140, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(600, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.14, now);
+        } else if (vehicle === 'suv' || vehicle === 'jeep') {
+          // Deep 4x4 rumble
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(52, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(450, now);
+          gain.gain.setValueAtTime(this.soundVolume * 0.25, now);
         } else {
           // Bus heavy diesel drone
           osc.type = 'sawtooth';
@@ -156,19 +195,24 @@ class SoundManager {
   public updateEnginePitch(speedRatio: number) {
     if (!this.ctx || this.isMuted) return;
     const now = this.ctx.currentTime;
-    const s = Math.max(0.5, Math.min(2.0, speedRatio));
+    const s = Math.max(0.4, Math.min(2.4, speedRatio));
 
     if (this.currentVehicle === 'skateboard' && this.rollGain) {
       this.rollGain.gain.setValueAtTime(this.soundVolume * 0.12 * s, now);
     } else if (this.engineOsc && this.engineFilter) {
       let baseFreq = 80;
       if (this.currentVehicle === 'bicycle') baseFreq = 70;
-      else if (this.currentVehicle === 'motorcycle') baseFreq = 90;
+      else if (this.currentVehicle === 'sports_motorcycle' || this.currentVehicle === 'motorcycle') baseFreq = 105;
+      else if (this.currentVehicle === 'standard_motorcycle') baseFreq = 80;
+      else if (this.currentVehicle === 'scooter') baseFreq = 120;
+      else if (this.currentVehicle === 'sports_car') baseFreq = 65;
+      else if (this.currentVehicle === 'luxury_car') baseFreq = 140;
+      else if (this.currentVehicle === 'suv' || this.currentVehicle === 'jeep') baseFreq = 52;
       else if (this.currentVehicle === 'autorickshaw') baseFreq = 60;
       else if (this.currentVehicle === 'cng') baseFreq = 110;
       else if (this.currentVehicle === 'bus') baseFreq = 44;
 
-      this.engineOsc.frequency.setTargetAtTime(baseFreq * (0.8 + s * 0.4), now, 0.05);
+      this.engineOsc.frequency.setTargetAtTime(baseFreq * (0.8 + s * 0.45), now, 0.05);
     }
   }
 
@@ -463,6 +507,328 @@ class SoundManager {
     gain.connect(this.ctx.destination);
     osc.start(now);
     osc.stop(now + 0.1);
+  }
+
+  public playCheckpointSave() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Ethereal futuristic hologram chime (E5 -> G#5 -> B5 -> E6)
+    const notes = [659.25, 830.61, 987.77, 1318.51];
+    notes.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.06;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(this.soundVolume * 0.3, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.35);
+    });
+  }
+
+  public playPhoneOpen() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Modern smartphone haptic click & chime
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(587.33, now); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, now + 0.08); // A5
+    gain.gain.setValueAtTime(this.soundVolume * 0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.005, now + 0.15);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  }
+
+  public playPhoneNotification() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Upward glass notification marimba
+    [783.99, 1046.5].forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.09;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(this.soundVolume * 0.32, t);
+      gain.gain.exponentialRampToValueAtTime(0.005, t + 0.22);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.22);
+    });
+  }
+
+  public playVehicleEnter() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Solid door shut "thunk" + starter motor rev
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(55, now + 0.18);
+    gain.gain.setValueAtTime(this.soundVolume * 0.45, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.22);
+  }
+
+  public playVehicleExit() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Door latch click & step out
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+    gain.gain.setValueAtTime(this.soundVolume * 0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  }
+
+  // --- Realistic Footsteps & Pedestrian Sounds ---
+  private footstepToggle = false;
+  public playFootstep(isSneaking = false) {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    this.footstepToggle = !this.footstepToggle;
+
+    const baseFreq = isSneaking ? 180 : (this.footstepToggle ? 280 : 250);
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(baseFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(60, now + 0.06);
+
+    const vol = isSneaking ? this.soundVolume * 0.1 : this.soundVolume * 0.22;
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.005, now + 0.08);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.08);
+  }
+
+  public playJumpExertion() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Vocal exertion 'Hup!'
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(340, now + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(140, now + 0.16);
+
+    gain.gain.setValueAtTime(this.soundVolume * 0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  public playVocalShout() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Dual formant Bangladesh street call ("Ei bhai! / Ooi!")
+    [360, 540, 720].forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = idx === 0 ? 'sawtooth' : 'triangle';
+      const t = now + idx * 0.04;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.35, t + 0.18);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.9, t + 0.32);
+
+      gain.gain.setValueAtTime(this.soundVolume * 0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.005, t + 0.35);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.35);
+    });
+  }
+
+  // --- Dedicated Vehicle Cockpit Sounds ---
+  public playGearShift(gear: string) {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Solid mechanical gated shifter clunk
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(240, now);
+    osc.frequency.exponentialRampToValueAtTime(80, now + 0.08);
+
+    gain.gain.setValueAtTime(this.soundVolume * 0.35, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.11);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.11);
+  }
+
+  public playBrakePedal() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Pneumatic air hiss + friction grab
+    const bufferSize = this.ctx.sampleRate * 0.18;
+    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(850, now);
+    filter.Q.setValueAtTime(2.0, now);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(this.soundVolume * 0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.ctx.destination);
+    noise.start(now);
+  }
+
+  public playBicycleBell() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Classic chrome bell dual chime ("Tring-Tring!")
+    [1760, 2093].forEach((f, idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.09;
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.setValueAtTime(this.soundVolume * 0.45, t);
+      gain.gain.exponentialRampToValueAtTime(0.005, t + 0.28);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.28);
+    });
+  }
+
+  public playCadencePedal() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Bicycle pedal crank ratchet click
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.exponentialRampToValueAtTime(160, now + 0.05);
+    gain.gain.setValueAtTime(this.soundVolume * 0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.06);
+  }
+
+  public playSkatePush() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Foot scrape on road + wheel spin
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180, now);
+    osc.frequency.exponentialRampToValueAtTime(80, now + 0.14);
+    gain.gain.setValueAtTime(this.soundVolume * 0.35, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.16);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.16);
+  }
+
+  public playCountdownTick() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Race Countdown Low Beep (440Hz A4)
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, now);
+    gain.gain.setValueAtTime(this.soundVolume * 0.4, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  public playRaceStart() {
+    this.initContext();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // Race GO High Beep (880Hz A5, energetic brass tone)
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(880, now);
+    gain.gain.setValueAtTime(this.soundVolume * 0.55, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.45);
   }
 
   // --- Procedural Rhythmic Street Music ---

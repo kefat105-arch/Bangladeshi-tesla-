@@ -4,13 +4,38 @@
  */
 
 import React from 'react';
-import { VehicleStage, VEHICLE_CONFIGS, VEHICLE_STAGES, GameScoreState, MinimapEntity } from '../types/game';
-import { Gauge, Coins, Flame, Volume2, VolumeX, Pause, Compass, Zap } from 'lucide-react';
+import {
+  VehicleStage,
+  VEHICLE_CONFIGS,
+  VEHICLE_STAGES,
+  GameScoreState,
+  MinimapEntity,
+  GameMode,
+  SavedCheckpoint,
+} from '../types/game';
+import {
+  Gauge,
+  Coins,
+  Flame,
+  Volume2,
+  VolumeX,
+  Pause,
+  Compass,
+  Zap,
+  Smartphone,
+  Shield,
+  Eye,
+  Key,
+  Globe,
+  Flag,
+} from 'lucide-react';
 import { MiniMap } from './MiniMap';
 
 interface GameHUDProps {
   scoreState: GameScoreState;
   currentVehicle: VehicleStage;
+  isDriving: boolean;
+  gameMode: GameMode;
   pickupTarget: VehicleStage | null;
   pickupDistance: number | null;
   skitchStatus: { active: boolean; label?: string };
@@ -20,16 +45,24 @@ interface GameHUDProps {
   onPause: () => void;
   onHorn: () => void;
   onAction: () => void;
+  onOpenPhone: () => void;
+  onResetCamera: () => void;
   minimapEntities: MinimapEntity[];
   currentBiomeName: string;
   showMinimap: boolean;
   showGestureTutorial: boolean;
   canSkitch: boolean;
+  lastSavedCheckpoint?: SavedCheckpoint | null;
+  nearbyVehicle?: { stage: VehicleStage; x: number; z: number } | null;
+  onEnterVehicle?: (stage: VehicleStage) => void;
+  onExitVehicle?: () => void;
 }
 
 export const GameHUD: React.FC<GameHUDProps> = ({
   scoreState,
   currentVehicle,
+  isDriving,
+  gameMode,
   pickupTarget,
   pickupDistance,
   skitchStatus,
@@ -39,18 +72,24 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onPause,
   onHorn,
   onAction,
+  onOpenPhone,
+  onResetCamera,
   minimapEntities,
   currentBiomeName,
   showMinimap,
   showGestureTutorial,
   canSkitch,
+  lastSavedCheckpoint,
+  nearbyVehicle,
+  onEnterVehicle,
+  onExitVehicle,
 }) => {
   const currentConfig = VEHICLE_CONFIGS[currentVehicle];
   const currentIdx = VEHICLE_STAGES.indexOf(currentVehicle);
   const nextIdx = (currentIdx + 1) % VEHICLE_STAGES.length;
   const nextConfig = VEHICLE_CONFIGS[VEHICLE_STAGES[nextIdx]];
 
-  const stageReq = currentConfig.requiredMilestone;
+  const stageReq = currentConfig?.requiredMilestone || 400;
   const currentStageDist = scoreState.distance % stageReq;
   const progressPct = Math.min(100, Math.floor((currentStageDist / stageReq) * 100));
 
@@ -77,17 +116,47 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 bg-slate-900/85 text-white px-2.5 py-1 rounded-lg border border-slate-800 text-xs">
+          {/* Current Vehicle Badge */}
+          <div className="flex items-center gap-2 bg-slate-900/85 text-white px-2.5 py-1 rounded-lg border border-slate-800 text-xs shadow-md">
             <span
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: currentConfig.primaryColor }}
+              className="w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: currentConfig?.primaryColor || '#0284c7' }}
             />
-            <span className="font-bold text-slate-100">{currentConfig.name}</span>
-            <span className="text-slate-400 text-[10px]">({currentConfig.bengaliName})</span>
+            <span className="font-bold text-slate-100">{currentConfig?.name || 'Skateboard'}</span>
+            <span className="text-slate-400 text-[10px]">({currentConfig?.bengaliName || ''})</span>
+            {!isDriving && (
+              <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                ON FOOT
+              </span>
+            )}
+          </div>
+
+          {/* Mode Pill & Checkpoint Counter */}
+          <div className="flex items-center gap-1.5 text-[10px]">
+            <span
+              className={`px-2 py-0.5 rounded-full font-black uppercase tracking-wider shadow-sm border ${
+                gameMode === 'runner'
+                  ? 'bg-sky-600/90 border-sky-400 text-white'
+                  : gameMode === 'freeroam'
+                  ? 'bg-emerald-600/90 border-emerald-400 text-white'
+                  : 'bg-rose-600/90 border-rose-400 text-white'
+              }`}
+            >
+              {gameMode === 'runner' && '🏁 ENDLESS RUNNER'}
+              {gameMode === 'freeroam' && '🌐 ONLINE FREE ROAM'}
+              {gameMode === 'versus' && '⚔️ ONLINE VERSUS'}
+            </span>
+
+            {scoreState.checkpointsPassed > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-purple-900/80 border border-purple-400 text-purple-200 font-bold flex items-center gap-1">
+                <Shield className="w-3 h-3 text-purple-300" />
+                <span>CP #{scoreState.checkpointsPassed}</span>
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Center: Sleek Compact Top Notification Pill */}
+        {/* Center: Top Notification Pill */}
         <div className="flex flex-col items-center flex-1 max-w-[240px] sm:max-w-xs">
           {floatingNotice ? (
             <div
@@ -114,13 +183,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 ⚡ PICKUP IN SIGHT! ⚡
               </div>
               <div className="text-[11px] font-black text-white">
-                STEER TO COLLECT: {VEHICLE_CONFIGS[pickupTarget].name}
+                COLLECT: {VEHICLE_CONFIGS[pickupTarget]?.name}
               </div>
             </div>
           ) : (
             <div className="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-2.5 py-1 shadow-md">
               <div className="flex items-center justify-between text-[10px] font-semibold text-slate-300 mb-0.5">
-                <span>NEXT: {nextConfig.name}</span>
+                <span>NEXT: {nextConfig?.name}</span>
                 <span className="tabular-nums text-sky-400 font-bold">{progressPct}%</span>
               </div>
               <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden border border-slate-700">
@@ -146,7 +215,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           )}
         </div>
 
-        {/* Right: Banked Taka, Score & Minimap / System Buttons */}
+        {/* Right: Banked Taka, Score & System Buttons */}
         <div className="flex flex-col items-end gap-1.5">
           <div className="flex items-center gap-2 bg-slate-900/90 text-white px-3 py-1.5 rounded-xl border border-slate-700/80 shadow-lg">
             <div className="flex items-center gap-1 text-amber-400 font-bold tabular-nums text-base sm:text-lg">
@@ -167,6 +236,17 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <span>{scoreState.multiplier.toFixed(1)}x</span>
               </div>
             )}
+
+            {/* Permanent Smartphone HUD Button */}
+            <button
+              onClick={onOpenPhone}
+              aria-label="Open Smartphone App"
+              className="p-1.5 bg-purple-600 hover:bg-purple-500 active:scale-95 text-white rounded-lg border border-purple-300 shadow-md flex items-center gap-1 text-xs font-black px-2 transition"
+              title="Open Smartphone (Garage & Maps)"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">PHONE</span>
+            </button>
 
             <button
               onClick={onHorn}
@@ -206,31 +286,31 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         <div className="flex flex-col items-center justify-center my-auto">
           <div className="bg-slate-950/90 border border-sky-400/60 rounded-2xl p-3.5 shadow-2xl max-w-sm text-center text-white backdrop-blur-sm">
             <div className="text-xs font-black uppercase text-sky-400 tracking-wider mb-1 flex items-center justify-center gap-1.5">
-              <span>DIRECT TOUCH GESTURES</span>
+              <span>TOUCH & 360° CAMERA CONTROLS</span>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300 mt-2 text-left">
               <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-                <span className="font-bold text-sky-300">Drag ◄ ►</span>
-                <div>Steer anywhere on screen</div>
+                <span className="font-bold text-sky-300">Left Side</span>
+                <div>Steer / Move character</div>
               </div>
               <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-                <span className="font-bold text-amber-300">Swipe ▲</span>
-                <div>Jump / Ollie stunt</div>
+                <span className="font-bold text-amber-300">Right Side Drag</span>
+                <div>Free 360° Camera Look</div>
               </div>
               <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-                <span className="font-bold text-indigo-300">Swipe ▼</span>
-                <div>Crouch / Duck / Slide</div>
+                <span className="font-bold text-indigo-300">Phone Icon</span>
+                <div>Call & drive any vehicle</div>
               </div>
               <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-                <span className="font-bold text-emerald-300">Tap / Double-tap</span>
-                <div>Skitch CNG / Slap / Horn</div>
+                <span className="font-bold text-emerald-300">Checkpoints</span>
+                <div>Auto-save every 350m</div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Floating Action Button (for one-tap Skitch / Slap access without clutter) */}
+      {/* Floating Action Bar */}
       <div className="flex justify-end p-2 pointer-events-auto">
         <button
           onClick={onAction}
